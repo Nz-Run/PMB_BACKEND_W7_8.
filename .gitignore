@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+pmb_backup_before_nim.db
+PMB_BACKEND/
+PMB_BACKEND.zip

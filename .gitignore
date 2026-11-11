@@ -1,7 +1,42 @@
+﻿# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Testing and coverage
 .pytest_cache/
 .coverage
-pmb_backup_before_nim.db
-PMB_BACKEND/
-PMB_BACKEND.zip
+.coverage.*
+htmlcov/
+.hypothesis/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local database and backups
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.backup
+*.backup_*
+pmb_backup*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Archives
+*.zip
+
+# IDE
+.vscode/
+.idea/

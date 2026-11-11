@@ -40,3 +40,6 @@ pmb_backup*
 # IDE
 .vscode/
 .idea/
+
+# Old project backup
+/PMB_BACKEND/

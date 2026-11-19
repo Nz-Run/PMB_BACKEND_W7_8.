@@ -43,3 +43,5 @@ pmb_backup*
 
 # Old project backup
 /PMB_BACKEND/
+# Source code backups
+*_backup_*.py

@@ -460,3 +460,204 @@ class Jadwal(Base):
     ruangan: Mapped["Ruangan"] = relationship(
         back_populates="jadwals"
     )
+
+# ==========================================
+# MODEL KEHADIRAN MAHASISWA
+# ==========================================
+
+class Kehadiran(Base):
+    __tablename__ = "kehadiran"
+
+    __table_args__ = (
+        UniqueConstraint("krs_detail_id", name="uq_kehadiran_krs_detail"),
+        CheckConstraint("total_pertemuan >= 1", name="ck_kehadiran_total"),
+        CheckConstraint(
+            "jumlah_hadir >= 0 AND jumlah_hadir <= total_pertemuan",
+            name="ck_kehadiran_hadir"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    krs_detail_id: Mapped[int] = mapped_column(
+        ForeignKey("krs_detail.id", ondelete="CASCADE"),
+        nullable=False
+    )
+
+    total_pertemuan: Mapped[int] = mapped_column(Integer, nullable=False)
+    jumlah_hadir: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+# ==========================================
+# MODEL RIWAYAT PERUBAHAN NILAI
+# ==========================================
+
+class RiwayatNilai(Base):
+    __tablename__ = "riwayat_nilai"
+
+    __table_args__ = (
+        Index("ix_riwayat_nilai_detail", "krs_detail_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    krs_detail_id: Mapped[int] = mapped_column(
+        ForeignKey("krs_detail.id", ondelete="CASCADE"),
+        nullable=False
+    )
+
+    nilai_lama: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    nilai_baru: Mapped[str] = mapped_column(String(2), nullable=False)
+
+    changed_by: Mapped[int] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=False
+    )
+
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=func.now()
+    )
+
+# ==========================================
+# MODEL KEUANGAN (SPP)
+# ==========================================
+
+class PaymentMethod(Base):
+    __tablename__ = "payment_method"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True
+    )
+
+    nama_metode: Mapped[str] = mapped_column(
+        String(50), unique=True, nullable=False
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+
+
+class Billing(Base):
+    __tablename__ = "billing"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "nim", "semester",
+            name="uq_billing_nim_semester"
+        ),
+        CheckConstraint(
+            "total_amount > 0",
+            name="ck_billing_total_amount"
+        ),
+        CheckConstraint(
+            "paid_amount >= 0",
+            name="ck_billing_paid_amount"
+        ),
+        CheckConstraint(
+            "fine_amount >= 0",
+            name="ck_billing_fine_amount"
+        ),
+        CheckConstraint(
+            "status IN ('unpaid', 'partial', 'paid', 'overdue')",
+            name="ck_billing_status"
+        ),
+        Index("ix_billing_nim", "nim"),
+        Index("ix_billing_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, index=True
+    )
+
+    nim: Mapped[str] = mapped_column(
+        ForeignKey("applicants.nim"),
+        nullable=False
+    )
+
+    semester: Mapped[str] = mapped_column(
+        String(5), nullable=False
+    )
+
+    total_amount: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+
+    paid_amount: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+
+    fine_amount: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+
+    due_date: Mapped[Date] = mapped_column(
+        Date, nullable=False
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20), default="unpaid", nullable=False
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.current_timestamp(),
+        nullable=False
+    )
+
+    payments: Mapped[list["Payment"]] = relationship(
+        back_populates="billing",
+        cascade="all, delete-orphan"
+    )
+
+
+class Payment(Base):
+    __tablename__ = "payment"
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_payment_amount"
+        ),
+        Index("ix_payment_billing_id", "billing_id"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, index=True
+    )
+
+    billing_id: Mapped[int] = mapped_column(
+        ForeignKey("billing.id", ondelete="CASCADE"),
+        nullable=False
+    )
+
+    payment_method_id: Mapped[int] = mapped_column(
+        ForeignKey("payment_method.id"),
+        nullable=False
+    )
+
+    amount: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+
+    transaction_id: Mapped[str | None] = mapped_column(
+        String(100), unique=True, nullable=True
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20), default="success", nullable=False
+    )
+
+    paid_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.current_timestamp(),
+        nullable=False
+    )
+
+    billing: Mapped["Billing"] = relationship(
+        back_populates="payments"
+    )
+
+    payment_method: Mapped["PaymentMethod"] = relationship()

@@ -1,7 +1,14 @@
 
+import os
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import (
+    FastAPI,
+    Depends,
+    HTTPException,
+    Request
+)
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
@@ -25,7 +32,13 @@ from app.models import (
     KRSNotification,
     Jadwal,
     Ruangan,
-    MataKuliah
+    MataKuliah,
+    Kehadiran,
+    RiwayatNilai,
+    SkalaNilai,
+    Payment,
+    Billing,
+    PaymentMethod
 )
 
 from app.schemas import (
@@ -40,29 +53,35 @@ from app.schemas import (
     RuanganCreateRequest,
     JadwalCreateRequest,
     JadwalUpdateRequest,
-    JadwalResponse
+    JadwalResponse,
+    InputNilaiRequest,
+    KehadiranRequest,
+    TranskripResponse,
+    BillingGenerateRequest,
+    PaymentCreateRequest
 )
 
 from app.security import hash_password, verify_password
+
 from app.services.krs_manager import KRSManager
 from app.services.schedule_service import ScheduleService
-
-
-from app.schemas import (
-    RegisterRequest,
-    RegisterResponse,
-    LoginRequest,
-    LoginResponse,
-    UserResponse
-)
-
-from app.security import hash_password, verify_password
+from app.services.grade_service import GradeService
+from app.services.payment_service import PaymentService
+from app.services.payment_webhook_service import PaymentWebhookService
+from app.services.grade_service import GradeService
+from app.services.billing_service import BillingService
+from app.services.payment_service import PaymentService
+from app.services.payment_webhook_service import PaymentWebhookService
 app = FastAPI(
     title="PMB Backend API",
     description="API Pendaftaran Mahasiswa Baru",
     version="1.0.0"
 )
 
+
+# ==========================================
+# HOME
+# ==========================================
 
 @app.get("/")
 def home():
@@ -71,9 +90,15 @@ def home():
     }
 
 
+# ==========================================
+# AUTHENTICATION DAN PENDAFTARAN
+# ==========================================
 
 @app.post("/register", response_model=RegisterResponse)
-def register(data: RegisterRequest, db: Session = Depends(get_db)):
+def register(
+    data: RegisterRequest,
+    db: Session = Depends(get_db)
+):
     existing_user = db.query(User).filter(
         User.email == data.email
     ).first()
@@ -85,17 +110,15 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         )
 
     try:
-        # Simpan data user
         new_user = User(
-    name=data.name,
-    email=data.email,
-    password=hash_password(data.password)
-)
+            name=data.name,
+            email=data.email,
+            password=hash_password(data.password)
+        )
 
         db.add(new_user)
         db.flush()
 
-        # Simpan data calon mahasiswa
         new_applicant = Applicant(
             user_id=new_user.id,
             tanggal_lahir=data.tanggal_lahir,
@@ -105,7 +128,6 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         db.add(new_applicant)
         db.flush()
 
-        # Simpan data pendaftaran
         new_registration = Registration(
             applicant_id=new_applicant.id,
             program_studi=data.program_studi
@@ -113,6 +135,10 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 
         db.add(new_registration)
         db.commit()
+
+        db.refresh(new_user)
+        db.refresh(new_applicant)
+        db.refresh(new_registration)
 
         return {
             "message": "Pendaftaran berhasil",
@@ -136,11 +162,21 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
             status_code=500,
             detail="Terjadi kesalahan pada server"
         )
-@app.post("/login", response_model=LoginResponse)
-def login(data: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
 
-    if not user or not verify_password(data.password, user.password):
+
+@app.post("/login", response_model=LoginResponse)
+def login(
+    data: LoginRequest,
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(
+        User.email == data.email
+    ).first()
+
+    if not user or not verify_password(
+        data.password,
+        user.password
+    ):
         raise HTTPException(
             status_code=401,
             detail="Email atau password salah"
@@ -159,9 +195,13 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         "token_type": "bearer"
     }
 
+
 @app.get("/me", response_model=UserResponse)
-def get_profile(current_user: User = Depends(get_current_user)):
+def get_profile(
+    current_user: User = Depends(get_current_user)
+):
     return current_user
+
 
 @app.post("/logout")
 def logout(
@@ -199,14 +239,18 @@ def logout(
     }
 
 
+# ==========================================
+# ADMIN PENDAFTARAN
+# ==========================================
+
 @app.get("/admin/registrations")
 def get_all_registrations(
     db: Session = Depends(get_db),
     current_admin: User = Depends(get_current_admin)
 ):
-    registrations = db.query(Registration).all()
+    return db.query(Registration).all()
 
-    return registrations
+
 @app.put("/admin/registrations/{registration_id}/decision")
 def decide_registration(
     registration_id: int,
@@ -261,8 +305,12 @@ def decide_registration(
 
     registration.status_pendaftaran = status
 
-    db.commit()
-    db.refresh(registration)
+    try:
+        db.commit()
+        db.refresh(registration)
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "message": "Keputusan pendaftaran berhasil disimpan",
@@ -270,7 +318,8 @@ def decide_registration(
         "status_pendaftaran": registration.status_pendaftaran,
         "nim": registration.applicant.nim
     }
-    
+
+
 @app.get("/admin/statistics")
 def get_registration_statistics(
     db: Session = Depends(get_db),
@@ -295,20 +344,16 @@ def get_registration_statistics(
             for row in statistics
         ]
     }
+
+
 # ==========================================
-# API KRS WEEK 6
+# HELPER MAHASISWA
 # ==========================================
 
-from app.models import KRS, KRSDetail
-from app.schemas import (
-    KRSAddCourseRequest,
-    KRSRevisionRequest,
-    KRSAdvisorAssignmentRequest,
-)
-from app.services.krs_manager import KRSManager
-
-
-def get_mahasiswa_nim(db: Session, current_user: User):
+def get_mahasiswa_nim(
+    db: Session,
+    current_user: User
+):
     if current_user.role != "mahasiswa":
         raise HTTPException(
             status_code=403,
@@ -329,7 +374,10 @@ def get_mahasiswa_nim(db: Session, current_user: User):
         Registration.applicant_id == applicant.id
     ).first()
 
-    if registration is None or registration.status_pendaftaran != "diterima":
+    if (
+        registration is None
+        or registration.status_pendaftaran != "diterima"
+    ):
         raise HTTPException(
             status_code=403,
             detail="Pendaftaran mahasiswa belum diterima"
@@ -337,6 +385,10 @@ def get_mahasiswa_nim(db: Session, current_user: User):
 
     return applicant.nim
 
+
+# ==========================================
+# API KRS WEEK 6
+# ==========================================
 
 def check_krs_result(result):
     if result.ok:
@@ -369,7 +421,7 @@ def check_krs_result(result):
 def get_student_krs(
     semester: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
     nim = get_mahasiswa_nim(db, current_user)
 
@@ -403,7 +455,7 @@ def get_student_krs(
                 "sks": detail.mata_kuliah.sks,
                 "hari": detail.mata_kuliah.hari,
                 "jam_mulai": str(detail.mata_kuliah.jam_mulai),
-                "jam_selesai": str(detail.mata_kuliah.jam_selesai),
+                "jam_selesai": str(detail.mata_kuliah.jam_selesai)
             }
             for detail in krs.details
         ]
@@ -415,7 +467,7 @@ def add_krs_course(
     semester: str,
     data: KRSAddCourseRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
     nim = get_mahasiswa_nim(db, current_user)
 
@@ -428,7 +480,9 @@ def add_krs_course(
 
     check_krs_result(result)
 
-    return {"message": result.message}
+    return {
+        "message": result.message
+    }
 
 
 @app.delete("/krs/{semester}/courses/{kode_mk}")
@@ -436,7 +490,7 @@ def delete_krs_course(
     semester: str,
     kode_mk: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
     nim = get_mahasiswa_nim(db, current_user)
 
@@ -444,20 +498,21 @@ def delete_krs_course(
     result = manager.remove_course(
         nim,
         semester,
-        
         kode_mk
     )
 
     check_krs_result(result)
 
-    return {"message": result.message}
+    return {
+        "message": result.message
+    }
 
 
 @app.post("/krs/{semester}/validate")
 def validate_student_krs(
     semester: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
     nim = get_mahasiswa_nim(db, current_user)
 
@@ -488,7 +543,7 @@ def validate_student_krs(
 def submit_student_krs(
     semester: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
     nim = get_mahasiswa_nim(db, current_user)
 
@@ -514,7 +569,9 @@ def submit_student_krs(
 
     check_krs_result(result)
 
-    return {"message": result.message}
+    return {
+        "message": result.message
+    }
 
 
 @app.put("/admin/krs/{nim}/{semester}/advisor")
@@ -523,7 +580,7 @@ def assign_krs_advisor(
     semester: str,
     data: KRSAdvisorAssignmentRequest,
     db: Session = Depends(get_db),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(get_current_admin)
 ):
     krs = db.query(KRS).filter(
         KRS.nim == nim,
@@ -565,7 +622,7 @@ def assign_krs_advisor(
         "nim": nim,
         "semester": semester,
         "dosen_pa_id": dosen.id,
-        "dosen_pa": dosen.name,
+        "dosen_pa": dosen.name
     }
 
 
@@ -574,7 +631,7 @@ def approve_student_krs(
     nim: str,
     semester: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
     if current_user.role != "dosen_pa":
         raise HTTPException(
@@ -608,7 +665,9 @@ def approve_student_krs(
 
     check_krs_result(result)
 
-    return {"message": result.message}
+    return {
+        "message": result.message
+    }
 
 
 @app.post("/dosen-pa/krs/{nim}/{semester}/revise")
@@ -617,7 +676,7 @@ def revise_student_krs(
     semester: str,
     data: KRSRevisionRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
     if current_user.role != "dosen_pa":
         raise HTTPException(
@@ -652,19 +711,19 @@ def revise_student_krs(
 
     check_krs_result(result)
 
-    return {"message": result.message}
+    return {
+        "message": result.message
+    }
+
 
 # ==========================================
 # API NOTIFIKASI KRS
 # ==========================================
 
-from app.models import KRSNotification
-
-
 @app.get("/notifications/me")
 def get_my_notifications(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
     notifications = (
         db.query(KRSNotification)
@@ -683,10 +742,10 @@ def get_my_notifications(
                 "krs_id": item.krs_id,
                 "message": item.message,
                 "is_read": item.is_read,
-                "created_at": item.created_at,
+                "created_at": item.created_at
             }
             for item in notifications
-        ],
+        ]
     }
 
 
@@ -694,21 +753,17 @@ def get_my_notifications(
 def mark_notification_as_read(
     notification_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
-    notification = (
-        db.query(KRSNotification)
-        .filter(
-            KRSNotification.id == notification_id,
-            KRSNotification.recipient_id == current_user.id,
-        )
-        .first()
-    )
+    notification = db.query(KRSNotification).filter(
+        KRSNotification.id == notification_id,
+        KRSNotification.recipient_id == current_user.id
+    ).first()
 
     if notification is None:
         raise HTTPException(
             status_code=404,
-            detail="Notifikasi tidak ditemukan",
+            detail="Notifikasi tidak ditemukan"
         )
 
     notification.is_read = True
@@ -722,23 +777,22 @@ def mark_notification_as_read(
     return {
         "message": "Notifikasi berhasil ditandai sudah dibaca",
         "notification_id": notification.id,
-        "is_read": notification.is_read,
+        "is_read": notification.is_read
     }
+
 
 # ==========================================
 # API JADWAL DAN RUANGAN WEEK 7-8
-# ==========================================
-
-
-# ==========================================
-# HELPER VALIDASI JADWAL
 # ==========================================
 
 def check_schedule_result(result):
     if result.get("success"):
         return
 
-    message = result.get("message", "Terjadi kesalahan")
+    message = result.get(
+        "message",
+        "Terjadi kesalahan"
+    )
 
     if "tidak ditemukan" in message.lower():
         status_code = 404
@@ -832,9 +886,11 @@ def delete_ruangan(
             detail="Ruangan tidak ditemukan"
         )
 
-    if db.query(Jadwal).filter(
+    jadwal_terpakai = db.query(Jadwal).filter(
         Jadwal.ruangan_id == ruangan_id
-    ).first():
+    ).first()
+
+    if jadwal_terpakai:
         raise HTTPException(
             status_code=409,
             detail="Ruangan masih digunakan oleh jadwal"
@@ -929,6 +985,7 @@ def get_jadwal_by_id(
         "jam_mulai": str(jadwal.jam_mulai),
         "jam_selesai": str(jadwal.jam_selesai),
         "jumlah_peserta": jadwal.jumlah_peserta
+
     }
 
 
@@ -952,18 +1009,18 @@ def update_jadwal(
     changes = data.model_dump(exclude_unset=True)
 
     result = service.update_schedule(
-    schedule_id=schedule_id,
-    kode_mk=changes.get("kode_mk", jadwal.kode_mk),
-    ruangan_id=changes.get("ruangan_id", jadwal.ruangan_id),
-    dosen=changes.get("dosen", jadwal.dosen),
-    hari=changes.get("hari", jadwal.hari),
-    jam_mulai=changes.get("jam_mulai", jadwal.jam_mulai),
-    jam_selesai=changes.get("jam_selesai", jadwal.jam_selesai),
-    jumlah_peserta=changes.get(
-        "jumlah_peserta",
-        jadwal.jumlah_peserta
+        schedule_id=schedule_id,
+        kode_mk=changes.get("kode_mk", jadwal.kode_mk),
+        ruangan_id=changes.get("ruangan_id", jadwal.ruangan_id),
+        dosen=changes.get("dosen", jadwal.dosen),
+        hari=changes.get("hari", jadwal.hari),
+        jam_mulai=changes.get("jam_mulai", jadwal.jam_mulai),
+        jam_selesai=changes.get("jam_selesai", jadwal.jam_selesai),
+        jumlah_peserta=changes.get(
+            "jumlah_peserta",
+            jadwal.jumlah_peserta
+        )
     )
-)
 
     check_schedule_result(result)
 
@@ -1037,6 +1094,7 @@ def get_jadwal_conflicts(
         "conflicts": all_conflicts
     }
 
+
 # ==========================================
 # REKOMENDASI ALTERNATIF JADWAL
 # ==========================================
@@ -1058,3 +1116,428 @@ def get_jadwal_alternatives(
         )
 
     return result
+
+
+# ==========================================
+# API NILAI DAN TRANSKRIP WEEK 9-10
+# ==========================================
+
+@app.post("/admin/kehadiran/{detail_id}")
+def input_kehadiran(
+    detail_id: int,
+    data: KehadiranRequest,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
+    kehadiran = GradeService.input_kehadiran(
+        db=db,
+        detail_id=detail_id,
+        total_pertemuan=data.total_pertemuan,
+        jumlah_hadir=data.jumlah_hadir
+    )
+
+    return {
+        "message": "Data kehadiran berhasil disimpan",
+        "krs_detail_id": kehadiran.krs_detail_id,
+        "total_pertemuan": kehadiran.total_pertemuan,
+        "jumlah_hadir": kehadiran.jumlah_hadir,
+        "persentase_kehadiran": round(
+            kehadiran.jumlah_hadir /
+            kehadiran.total_pertemuan * 100,
+            2
+        )
+    }
+
+
+@app.post("/admin/nilai/{detail_id}")
+def input_nilai(
+    detail_id: int,
+    data: InputNilaiRequest,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
+    detail = GradeService.input_nilai(
+        db=db,
+        detail_id=detail_id,
+        nilai=data.nilai,
+        admin_id=current_admin.id
+    )
+
+    skala = db.get(SkalaNilai, detail.nilai)
+
+    return {
+        "message": "Nilai berhasil disimpan",
+        "krs_detail_id": detail.id,
+        "kode_mk": detail.kode_mk,
+        "nilai": detail.nilai,
+        "bobot": skala.bobot
+    }
+
+
+@app.get("/mahasiswa/nilai")
+def get_my_grades(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    nim = get_mahasiswa_nim(db, current_user)
+
+    details = (
+        db.query(KRSDetail)
+        .join(KRS, KRS.id == KRSDetail.krs_id)
+        .filter(
+            KRS.nim == nim,
+            KRS.status == "approved"
+        )
+        .all()
+    )
+
+    hasil = []
+
+    for detail in details:
+        skala = (
+            db.get(SkalaNilai, detail.nilai)
+            if detail.nilai else None
+        )
+
+        kehadiran = db.query(Kehadiran).filter(
+            Kehadiran.krs_detail_id == detail.id
+        ).first()
+
+        persentase = None
+
+        if kehadiran:
+            persentase = round(
+                kehadiran.jumlah_hadir /
+                kehadiran.total_pertemuan * 100,
+                2
+            )
+
+        hasil.append({
+            "nim": nim,
+            "kode_mk": detail.kode_mk,
+            "nama_mk": detail.mata_kuliah.nama_mk,
+            "sks": detail.mata_kuliah.sks,
+            "nilai": detail.nilai,
+            "bobot": skala.bobot if skala else None,
+            "persentase_kehadiran": persentase
+        })
+
+    return {
+        "nim": nim,
+        "total_mata_kuliah": len(hasil),
+        "mata_kuliah": hasil
+    }
+
+
+@app.get(
+    "/mahasiswa/transkrip",
+    response_model=TranskripResponse
+)
+def get_my_transcript(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    nim = get_mahasiswa_nim(db, current_user)
+
+    details = (
+        db.query(KRSDetail)
+        .join(KRS, KRS.id == KRSDetail.krs_id)
+        .filter(
+            KRS.nim == nim,
+            KRS.status == "approved",
+            KRSDetail.nilai.isnot(None)
+        )
+        .all()
+    )
+
+    mata_kuliah = []
+    total_sks = 0
+    total_bobot = 0
+
+    for detail in details:
+        skala = db.get(SkalaNilai, detail.nilai)
+
+        if not skala:
+            continue
+
+        sks = detail.mata_kuliah.sks
+
+        total_sks += sks
+        total_bobot += skala.bobot * sks
+
+        kehadiran = db.query(Kehadiran).filter(
+            Kehadiran.krs_detail_id == detail.id
+        ).first()
+
+        persentase = None
+
+        if kehadiran:
+            persentase = round(
+                kehadiran.jumlah_hadir /
+                kehadiran.total_pertemuan * 100,
+                2
+            )
+
+        mata_kuliah.append({
+            "nim": nim,
+            "kode_mk": detail.kode_mk,
+            "nama_mk": detail.mata_kuliah.nama_mk,
+            "sks": sks,
+            "nilai": detail.nilai,
+            "bobot": skala.bobot,
+            "persentase_kehadiran": persentase
+        })
+
+    ipk = (
+        round(total_bobot / total_sks, 2)
+        if total_sks else 0.0
+    )
+
+    return {
+        "nim": nim,
+        "nama": current_user.name,
+        "total_sks": total_sks,
+        "ipk": ipk,
+        "mata_kuliah": mata_kuliah
+    }
+
+
+# ==========================================
+# MODUL KEUANGAN
+# WEEK 9-10
+# ==========================================
+
+@app.post("/admin/billing/generate")
+def generate_billing(
+    data: BillingGenerateRequest,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    result = BillingService.generate_billing(
+        db=db,
+        semester=data.semester,
+        tanggal_mulai=data.tanggal_mulai
+    )
+
+    return {
+        "message": "Pembuatan tagihan berhasil",
+        "data": result
+    }
+
+
+@app.get("/billing/me")
+def get_my_billing(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    applicant = db.query(Applicant).filter(
+        Applicant.user_id == current_user.id
+    ).first()
+
+    if not applicant or not applicant.nim:
+        raise HTTPException(
+            status_code=404,
+            detail="Data mahasiswa atau NIM tidak ditemukan"
+        )
+
+    billings = db.query(Billing).filter(
+        Billing.nim == applicant.nim
+    ).order_by(Billing.semester.desc()).all()
+
+    return {
+        "nim": applicant.nim,
+        "total_tagihan": len(billings),
+        "data": [
+            {
+                "id": billing.id,
+                "semester": billing.semester,
+                "total_amount": billing.total_amount,
+                "paid_amount": billing.paid_amount,
+                "fine_amount": billing.fine_amount,
+                "due_date": billing.due_date,
+                "status": billing.status
+            }
+            for billing in billings
+        ]
+    }
+
+
+@app.get("/billing/{billing_id}/payments")
+def get_billing_payments(
+    billing_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    applicant = db.query(Applicant).filter(
+        Applicant.user_id == current_user.id
+    ).first()
+
+    if not applicant or not applicant.nim:
+        raise HTTPException(
+            status_code=404,
+            detail="Data mahasiswa tidak ditemukan"
+        )
+
+    billing = db.query(Billing).filter(
+        Billing.id == billing_id,
+        Billing.nim == applicant.nim
+    ).first()
+
+    if not billing:
+        raise HTTPException(
+            status_code=404,
+            detail="Tagihan tidak ditemukan"
+        )
+
+    payments = PaymentService.get_payment_history(
+        db=db,
+        billing_id=billing_id
+    )
+
+    return {
+        "billing_id": billing.id,
+        "nim": billing.nim,
+        "semester": billing.semester,
+        "total_pembayaran": len(payments),
+        "data": [
+            {
+                "payment_id": payment.id,
+                "metode_pembayaran": payment.payment_method.nama_metode,
+                "jumlah": payment.amount,
+                "transaction_id": payment.transaction_id,
+                "status": payment.status,
+                "tanggal_pembayaran": payment.paid_at
+            }
+            for payment in payments
+        ]
+    }
+
+
+@app.post("/admin/billing/{billing_id}/update")
+def update_billing(
+    billing_id: int,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    billing = BillingService.update_billing_status(
+        db=db,
+        billing_id=billing_id
+    )
+
+    return {
+        "message": "Status tagihan berhasil diperbarui",
+        "data": {
+            "id": billing.id,
+            "nim": billing.nim,
+            "semester": billing.semester,
+            "total_amount": billing.total_amount,
+            "paid_amount": billing.paid_amount,
+            "fine_amount": billing.fine_amount,
+            "due_date": billing.due_date,
+            "status": billing.status
+        }
+    }
+
+
+@app.get("/payment-methods")
+def get_payment_methods(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    methods = db.query(PaymentMethod).filter(
+        PaymentMethod.is_active == True
+    ).order_by(PaymentMethod.id.asc()).all()
+
+    return {
+        "total_metode": len(methods),
+        "data": [
+            {
+                "id": method.id,
+                "nama_metode": method.nama_metode
+            }
+            for method in methods
+        ]
+    }
+
+# ==========================================
+# PAYMENT WEBHOOK
+# ==========================================
+
+class PaymentWebhookRequest(BaseModel):
+    transaction_id: str
+    billing_id: int
+    payment_method_id: int
+    amount: int
+    status: str
+
+
+@app.post("/webhook/payment")
+async def payment_webhook(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    payload = await request.body()
+
+    signature = request.headers.get(
+        "X-Webhook-Signature", ""
+    )
+
+    secret = os.getenv("PAYMENT_WEBHOOK_SECRET", "")
+
+    if not secret:
+        raise HTTPException(
+            status_code=500,
+            detail="Webhook secret belum dikonfigurasi"
+        )
+
+    valid = PaymentWebhookService.verify_signature(
+        payload,
+        signature,
+        secret
+    )
+
+    if not valid:
+        raise HTTPException(
+            status_code=401,
+            detail="Signature webhook tidak valid"
+        )
+
+    try:
+        data = PaymentWebhookRequest.model_validate_json(payload)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Format payload webhook tidak valid"
+        )
+
+    if data.status != "success":
+        return {
+            "message": "Pembayaran belum berhasil",
+            "status": data.status
+        }
+
+    # Mencegah transaksi yang sama diproses dua kali.
+    existing = db.query(Payment).filter(
+        Payment.transaction_id == data.transaction_id
+    ).first()
+
+    if existing:
+        return {
+            "message": "Transaksi sudah pernah diproses",
+            "payment_id": existing.id
+        }
+
+    result = PaymentService.record_payment(
+        db=db,
+        billing_id=data.billing_id,
+        payment_method_id=data.payment_method_id,
+        amount=data.amount,
+        transaction_id=data.transaction_id
+    )
+
+    PaymentWebhookService.send_receipt(result)
+
+    return {
+        "message": "Webhook berhasil diproses",
+        "payment": result
+    }

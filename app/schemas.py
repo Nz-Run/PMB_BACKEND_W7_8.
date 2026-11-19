@@ -97,3 +97,57 @@ class JadwalResponse(BaseModel):
     jumlah_peserta: int
 
     model_config = ConfigDict(from_attributes=True)
+
+# =========================
+# SCHEMA NILAI & TRANSKRIP
+# WEEK 9-10
+# =========================
+
+class InputNilaiRequest(BaseModel):
+    nilai: str = Field(pattern=r"^(A|B|C|D|E)$")
+
+
+class KehadiranRequest(BaseModel):
+    total_pertemuan: int = Field(ge=1)
+    jumlah_hadir: int = Field(ge=0)
+
+
+class NilaiResponse(BaseModel):
+    nim: str
+    kode_mk: str
+    nama_mk: str
+    sks: int
+    nilai: str | None
+    bobot: float | None
+    persentase_kehadiran: float | None
+
+
+class TranskripResponse(BaseModel):
+    nim: str
+    nama: str
+    total_sks: int
+    ipk: float
+    mata_kuliah: list[NilaiResponse]
+
+# =========================
+# SCHEMA KEUANGAN
+# WEEK 9-10
+# =========================
+
+from datetime import date
+from pydantic import BaseModel, Field
+
+
+class BillingGenerateRequest(BaseModel):
+    semester: str = Field(min_length=5, max_length=5)
+    tanggal_mulai: date
+
+
+class PaymentCreateRequest(BaseModel):
+    billing_id: int = Field(gt=0)
+    payment_method_id: int = Field(gt=0)
+    amount: int = Field(gt=0)
+    transaction_id: str | None = Field(
+        default=None,
+        max_length=100
+    )

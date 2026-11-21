@@ -1,4 +1,18 @@
+import csv
+from io import StringIO, BytesIO
 
+from fastapi.responses import Response
+
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle
+)
 import os
 from datetime import datetime, timezone
 
@@ -1229,17 +1243,9 @@ def get_my_grades(
     }
 
 
-@app.get(
-    "/mahasiswa/transkrip",
-    response_model=TranskripResponse
-)
-def get_my_transcript(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    nim = get_mahasiswa_nim(db, current_user)
 
-    details = (
+def build_transcript_data(db: Session, nim: str, nama: str, semester: str):
+    all_details = (
         db.query(KRSDetail)
         .join(KRS, KRS.id == KRSDetail.krs_id)
         .filter(
@@ -1250,20 +1256,26 @@ def get_my_transcript(
         .all()
     )
 
+    semester_details = [
+        detail for detail in all_details
+        if detail.krs.semester == semester
+    ]
+
     mata_kuliah = []
     total_sks = 0
-    total_bobot = 0
+    total_bobot_semester = 0
 
-    for detail in details:
+    for detail in semester_details:
         skala = db.get(SkalaNilai, detail.nilai)
 
         if not skala:
             continue
 
         sks = detail.mata_kuliah.sks
+        bobot = skala.bobot
 
         total_sks += sks
-        total_bobot += skala.bobot * sks
+        total_bobot_semester += bobot * sks
 
         kehadiran = db.query(Kehadiran).filter(
             Kehadiran.krs_detail_id == detail.id
@@ -1271,7 +1283,7 @@ def get_my_transcript(
 
         persentase = None
 
-        if kehadiran:
+        if kehadiran and kehadiran.total_pertemuan > 0:
             persentase = round(
                 kehadiran.jumlah_hadir /
                 kehadiran.total_pertemuan * 100,
@@ -1284,23 +1296,201 @@ def get_my_transcript(
             "nama_mk": detail.mata_kuliah.nama_mk,
             "sks": sks,
             "nilai": detail.nilai,
-            "bobot": skala.bobot,
+            "bobot": bobot,
             "persentase_kehadiran": persentase
         })
 
-    ipk = (
-        round(total_bobot / total_sks, 2)
+    ip_semester = (
+        round(total_bobot_semester / total_sks, 2)
         if total_sks else 0.0
+    )
+
+    total_sks_kumulatif = 0
+    total_bobot_kumulatif = 0
+
+    for detail in all_details:
+        skala = db.get(SkalaNilai, detail.nilai)
+
+        if not skala:
+            continue
+
+        sks = detail.mata_kuliah.sks
+        total_sks_kumulatif += sks
+        total_bobot_kumulatif += skala.bobot * sks
+
+    ipk = (
+        round(total_bobot_kumulatif / total_sks_kumulatif, 2)
+        if total_sks_kumulatif else 0.0
     )
 
     return {
         "nim": nim,
-        "nama": current_user.name,
+        "nama": nama,
         "total_sks": total_sks,
+        "ip_semester": ip_semester,
         "ipk": ipk,
         "mata_kuliah": mata_kuliah
     }
 
+
+@app.get(
+    "/mahasiswa/transkrip",
+    response_model=TranskripResponse
+)
+def get_my_transcript(
+    semester: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    nim = get_mahasiswa_nim(db, current_user)
+
+    return build_transcript_data(
+        db=db,
+        nim=nim,
+        nama=current_user.name,
+        semester=semester
+    )
+
+
+@app.get("/mahasiswa/transkrip/csv")
+def export_transcript_csv(
+    semester: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    nim = get_mahasiswa_nim(db, current_user)
+
+    transcript = build_transcript_data(
+        db=db,
+        nim=nim,
+        nama=current_user.name,
+        semester=semester
+    )
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "NIM", "Nama", "Semester", "Kode MK",
+        "Nama Mata Kuliah", "SKS", "Nilai",
+        "Bobot", "Kehadiran (%)"
+    ])
+
+    for item in transcript["mata_kuliah"]:
+        writer.writerow([
+            transcript["nim"],
+            transcript["nama"],
+            semester,
+            item["kode_mk"],
+            item["nama_mk"],
+            item["sks"],
+            item["nilai"],
+            item["bobot"],
+            item["persentase_kehadiran"]
+        ])
+
+    return Response(
+        content="\ufeff" + output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="transkrip_{semester}.csv"'
+        }
+    )
+
+
+@app.get("/mahasiswa/transkrip/pdf")
+def export_transcript_pdf(
+    semester: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    nim = get_mahasiswa_nim(db, current_user)
+
+    transcript = build_transcript_data(
+        db=db,
+        nim=nim,
+        nama=current_user.name,
+        semester=semester
+    )
+
+    buffer = BytesIO()
+
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=35,
+        leftMargin=35,
+        topMargin=40,
+        bottomMargin=40
+    )
+
+    styles = getSampleStyleSheet()
+    elements = [
+        Paragraph("TRANSKRIP NILAI MAHASISWA", styles["Title"]),
+        Spacer(1, 15),
+        Paragraph(f"NIM: {transcript['nim']}", styles["Normal"]),
+        Paragraph(f"Nama: {transcript['nama']}", styles["Normal"]),
+        Paragraph(f"Semester: {semester}", styles["Normal"]),
+        Spacer(1, 15)
+    ]
+
+    table_data = [[
+        "Kode MK", "Mata Kuliah", "SKS", "Nilai", "Bobot"
+    ]]
+
+    for item in transcript["mata_kuliah"]:
+        table_data.append([
+            item["kode_mk"],
+            item["nama_mk"],
+            str(item["sks"]),
+            item["nilai"],
+            str(item["bobot"])
+        ])
+
+    table = Table(
+        table_data,
+        repeatRows=1,
+        colWidths=[75, 190, 40, 50, 50]
+    )
+
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.darkblue),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ALIGN", (2, 1), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("PADDING", (0, 0), (-1, -1), 6),
+    ]))
+
+    elements.append(table)
+    elements.append(Spacer(1, 20))
+    elements.append(Paragraph(
+        f"Total SKS Semester: {transcript['total_sks']}",
+        styles["Normal"]
+    ))
+    elements.append(Paragraph(
+        f"IP Semester: {transcript['ip_semester']:.2f}",
+        styles["Normal"]
+    ))
+    elements.append(Paragraph(
+        f"IPK: {transcript['ipk']:.2f}",
+        styles["Normal"]
+    ))
+
+    document.build(elements)
+
+    pdf_content = buffer.getvalue()
+    buffer.close()
+
+    return Response(
+        content=pdf_content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="transkrip_{semester}.pdf"'
+        }
+    )
 
 # ==========================================
 # MODUL KEUANGAN

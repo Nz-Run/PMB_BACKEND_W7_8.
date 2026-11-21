@@ -126,10 +126,16 @@ class TranskripResponse(BaseModel):
     nim: str
     nama: str
     total_sks: int
+    ip_semester: float
+    ipk: float
+    mata_kuliah: list[NilaiResponse]
     ipk: float
     mata_kuliah: list[NilaiResponse]
 
 # =========================
+    ip_semester: float
+    ipk: float
+    mata_kuliah: list[NilaiResponse]# =========================
 # SCHEMA KEUANGAN
 # WEEK 9-10
 # =========================

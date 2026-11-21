@@ -1,4 +1,4 @@
-﻿
+
 from datetime import datetime
 from enum import Enum
 
@@ -521,15 +521,15 @@ class RiwayatNilai(Base):
     )
 
 # ==========================================
+
+# ==========================================
 # MODEL KEUANGAN (SPP)
 # ==========================================
 
 class PaymentMethod(Base):
     __tablename__ = "payment_method"
 
-    id: Mapped[int] = mapped_column(
-        Integer, primary_key=True
-    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
     nama_metode: Mapped[str] = mapped_column(
         String(50), unique=True, nullable=False
@@ -539,6 +539,10 @@ class PaymentMethod(Base):
         Boolean, default=True, nullable=False
     )
 
+
+# ==========================================
+# MODEL TAGIHAN SPP
+# ==========================================
 
 class Billing(Base):
     __tablename__ = "billing"
@@ -550,15 +554,15 @@ class Billing(Base):
         ),
         CheckConstraint(
             "total_amount > 0",
-            name="ck_billing_total_amount"
+            name="ck_billing_total"
         ),
         CheckConstraint(
             "paid_amount >= 0",
-            name="ck_billing_paid_amount"
+            name="ck_billing_paid"
         ),
         CheckConstraint(
             "fine_amount >= 0",
-            name="ck_billing_fine_amount"
+            name="ck_billing_fine"
         ),
         CheckConstraint(
             "status IN ('unpaid', 'partial', 'paid', 'overdue')",
@@ -568,34 +572,22 @@ class Billing(Base):
         Index("ix_billing_status", "status"),
     )
 
-    id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, index=True
-    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
     nim: Mapped[str] = mapped_column(
         ForeignKey("applicants.nim"),
         nullable=False
     )
 
-    semester: Mapped[str] = mapped_column(
-        String(5), nullable=False
-    )
-
-    total_amount: Mapped[int] = mapped_column(
-        Integer, nullable=False
-    )
-
+    semester: Mapped[str] = mapped_column(String(5), nullable=False)
+    total_amount: Mapped[int] = mapped_column(Integer, nullable=False)
     paid_amount: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )
-
     fine_amount: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )
-
-    due_date: Mapped[Date] = mapped_column(
-        Date, nullable=False
-    )
+    due_date: Mapped[Date] = mapped_column(Date, nullable=False)
 
     status: Mapped[str] = mapped_column(
         String(20), default="unpaid", nullable=False
@@ -613,6 +605,10 @@ class Billing(Base):
     )
 
 
+# ==========================================
+# MODEL PEMBAYARAN
+# ==========================================
+
 class Payment(Base):
     __tablename__ = "payment"
 
@@ -624,9 +620,7 @@ class Payment(Base):
         Index("ix_payment_billing_id", "billing_id"),
     )
 
-    id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, index=True
-    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
     billing_id: Mapped[int] = mapped_column(
         ForeignKey("billing.id", ondelete="CASCADE"),
@@ -638,9 +632,7 @@ class Payment(Base):
         nullable=False
     )
 
-    amount: Mapped[int] = mapped_column(
-        Integer, nullable=False
-    )
+    amount: Mapped[int] = mapped_column(Integer, nullable=False)
 
     transaction_id: Mapped[str | None] = mapped_column(
         String(100), unique=True, nullable=True
@@ -661,3 +653,95 @@ class Payment(Base):
     )
 
     payment_method: Mapped["PaymentMethod"] = relationship()
+
+
+# ==========================================
+# MODEL PRESENSI QR CODE - WEEK 12
+# ==========================================
+
+class PresensiSesi(Base):
+    __tablename__ = "presensi_sesi"
+
+    __table_args__ = (
+        Index("ix_presensi_sesi_jadwal", "jadwal_id"),
+        CheckConstraint(
+            "valid_minutes > 0",
+            name="ck_presensi_valid_minutes"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    jadwal_id: Mapped[int] = mapped_column(
+        ForeignKey("jadwal.id", ondelete="CASCADE"),
+        nullable=False
+    )
+
+    token_jti: Mapped[str] = mapped_column(
+        String(100),
+        unique=True,
+        nullable=False
+    )
+
+    waktu_mulai: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False
+    )
+
+    waktu_kedaluwarsa: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False
+    )
+
+    valid_minutes: Mapped[int] = mapped_column(
+        Integer,
+        default=15,
+        nullable=False
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.current_timestamp(),
+        nullable=False
+    )
+
+
+class PresensiRecord(Base):
+    __tablename__ = "presensi_record"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "sesi_id",
+            "krs_detail_id",
+            name="uq_presensi_sesi_mahasiswa"
+        ),
+        CheckConstraint(
+            "status IN ('hadir', 'terlambat')",
+            name="ck_presensi_status"
+        ),
+        Index("ix_presensi_record_sesi", "sesi_id"),
+        Index("ix_presensi_record_detail", "krs_detail_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    sesi_id: Mapped[int] = mapped_column(
+        ForeignKey("presensi_sesi.id", ondelete="CASCADE"),
+        nullable=False
+    )
+
+    krs_detail_id: Mapped[int] = mapped_column(
+        ForeignKey("krs_detail.id", ondelete="CASCADE"),
+        nullable=False
+    )
+
+    waktu_scan: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False
+    )
+

@@ -172,3 +172,39 @@ class GradeService:
         )
 
         return round(total_bobot / total_sks, 2)
+
+    @staticmethod
+    def hitung_ip(db: Session, nim: str, semester: str):
+        hasil = db.execute(
+            select(
+                KRSDetail.nilai,
+                MataKuliah.sks,
+                SkalaNilai.bobot
+            )
+            .join(KRS, KRS.id == KRSDetail.krs_id)
+            .join(
+                MataKuliah,
+                MataKuliah.kode_mk == KRSDetail.kode_mk
+            )
+            .join(
+                SkalaNilai,
+                SkalaNilai.nilai == KRSDetail.nilai
+            )
+            .where(
+                KRS.nim == nim,
+                KRS.semester == semester,
+                KRS.status == "approved",
+                KRSDetail.nilai.isnot(None)
+            )
+        ).all()
+
+        total_sks = sum(row.sks for row in hasil)
+
+        if total_sks == 0:
+            return 0.0
+
+        total_bobot = sum(
+            row.bobot * row.sks for row in hasil
+        )
+
+        return round(total_bobot / total_sks, 2)

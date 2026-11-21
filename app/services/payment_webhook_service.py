@@ -2,7 +2,6 @@
 import hashlib
 import hmac
 import logging
-import os
 
 
 logger = logging.getLogger(__name__)
@@ -16,6 +15,10 @@ class PaymentWebhookService:
         signature: str,
         secret: str
     ) -> bool:
+        """
+        Memverifikasi signature webhook menggunakan HMAC SHA-256.
+        """
+
         if not payload or not signature or not secret:
             return False
 
@@ -37,9 +40,20 @@ class PaymentWebhookService:
 
     @staticmethod
     def send_receipt(payment_result: dict):
+        """
+        Simulasi pengiriman bukti pembayaran melalui email.
+        """
+
         logger.info(
-            "[SIMULASI EMAIL] Bukti pembayaran: %s",
-            payment_result
+            "[EMAIL BUKTI PEMBAYARAN] "
+            "NIM: %s | Payment ID: %s | "
+            "Jumlah: Rp%s | Status: berhasil",
+            payment_result.get("nim"),
+            payment_result.get("payment_id"),
+            payment_result.get(
+                "jumlah_pembayaran",
+                payment_result.get("jumlah_bayar")
+            )
         )
 
         return {

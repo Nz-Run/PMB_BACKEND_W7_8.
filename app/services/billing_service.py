@@ -11,7 +11,7 @@ class BillingService:
 
     TARIF_SPP = {
         "teknik": 5_000_000,
-        "ekonomi": 4_000_000
+        "ekonomi": 4_000_000,
     }
 
     DENDA_PER_HARI = 10_000
@@ -31,8 +31,11 @@ class BillingService:
     @staticmethod
     def calculate_late_fee(
         billing: Billing,
-        tanggal_hari_ini: date
+        tanggal_hari_ini: date | None = None
     ) -> int:
+        if tanggal_hari_ini is None:
+            tanggal_hari_ini = date.today()
+
         if tanggal_hari_ini <= billing.due_date:
             return 0
 
@@ -68,57 +71,58 @@ class BillingService:
         berhasil = []
         dilewati = []
 
-        for applicant, registration in mahasiswa_diterima:
-
-            if not applicant.nim:
-                continue
-
-            tagihan_lama = db.scalar(
-                select(Billing).where(
-                    Billing.nim == applicant.nim,
-                    Billing.semester == semester
-                )
-            )
-
-            if tagihan_lama:
-                dilewati.append({
-                    "nim": applicant.nim,
-                    "alasan": "Tagihan semester ini sudah tersedia"
-                })
-                continue
-
-            try:
-                tarif = BillingService.get_tarif(
-                    registration.program_studi
-                )
-            except ValueError as error:
-                dilewati.append({
-                    "nim": applicant.nim,
-                    "alasan": str(error)
-                })
-                continue
-
-            billing = Billing(
-                nim=applicant.nim,
-                semester=semester,
-                total_amount=tarif,
-                paid_amount=0,
-                fine_amount=0,
-                due_date=tanggal_jatuh_tempo,
-                status="unpaid"
-            )
-
-            db.add(billing)
-
-            berhasil.append({
-                "nim": applicant.nim,
-                "program_studi": registration.program_studi,
-                "total_tagihan": tarif,
-                "jatuh_tempo": tanggal_jatuh_tempo.isoformat()
-            })
-
         try:
+            for applicant, registration in mahasiswa_diterima:
+
+                if not applicant.nim:
+                    continue
+
+                tagihan_lama = db.scalar(
+                    select(Billing).where(
+                        Billing.nim == applicant.nim,
+                        Billing.semester == semester
+                    )
+                )
+
+                if tagihan_lama:
+                    dilewati.append({
+                        "nim": applicant.nim,
+                        "alasan": "Tagihan semester ini sudah tersedia"
+                    })
+                    continue
+
+                try:
+                    tarif = BillingService.get_tarif(
+                        registration.program_studi
+                    )
+                except ValueError as error:
+                    dilewati.append({
+                        "nim": applicant.nim,
+                        "alasan": str(error)
+                    })
+                    continue
+
+                billing = Billing(
+                    nim=applicant.nim,
+                    semester=semester,
+                    total_amount=tarif,
+                    paid_amount=0,
+                    fine_amount=0,
+                    due_date=tanggal_jatuh_tempo,
+                    status="unpaid"
+                )
+
+                db.add(billing)
+
+                berhasil.append({
+                    "nim": applicant.nim,
+                    "program_studi": registration.program_studi,
+                    "total_tagihan": tarif,
+                    "jatuh_tempo": tanggal_jatuh_tempo.isoformat()
+                })
+
             db.commit()
+
         except Exception:
             db.rollback()
             raise
@@ -134,18 +138,20 @@ class BillingService:
     @staticmethod
     def update_billing_status(
         db: Session,
-        billing_id: int
+        billing_id: int,
+        tanggal_sekarang: date | None = None
     ):
         billing = db.get(Billing, billing_id)
 
         if not billing:
             return None
 
-        hari_ini = date.today()
+        if tanggal_sekarang is None:
+            tanggal_sekarang = date.today()
 
         billing.fine_amount = BillingService.calculate_late_fee(
             billing,
-            hari_ini
+            tanggal_sekarang
         )
 
         total_kewajiban = (
@@ -156,7 +162,7 @@ class BillingService:
             billing.status = "paid"
         elif billing.paid_amount > 0:
             billing.status = "partial"
-        elif hari_ini > billing.due_date:
+        elif tanggal_sekarang > billing.due_date:
             billing.status = "overdue"
         else:
             billing.status = "unpaid"

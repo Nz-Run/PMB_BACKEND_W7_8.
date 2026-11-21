@@ -25,3 +25,8 @@ typing-inspection==0.4.4
 typing_extensions==4.16.0
 uvicorn==0.54.0
 hypothesis==6.170.15
+
+reportlab==5.1.0
+
+qrcode[pil]==8.2
+openpyxl==3.1.5

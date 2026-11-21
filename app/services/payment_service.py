@@ -1,7 +1,7 @@
 
 import logging
-
 from datetime import date
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -43,7 +43,10 @@ class PaymentService:
                     detail="Tagihan tidak ditemukan"
                 )
 
-            payment_method = db.get(PaymentMethod, payment_method_id)
+            payment_method = db.get(
+                PaymentMethod,
+                payment_method_id
+            )
 
             if not payment_method or not payment_method.is_active:
                 raise HTTPException(
@@ -51,7 +54,7 @@ class PaymentService:
                     detail="Metode pembayaran tidak tersedia"
                 )
 
-            # Perbarui denda sebelum menghitung sisa kewajiban
+            # Hitung denda sebelum menentukan sisa tagihan.
             billing.fine_amount = BillingService.calculate_late_fee(
                 billing,
                 date.today()
@@ -61,12 +64,18 @@ class PaymentService:
                 billing.total_amount + billing.fine_amount
             )
 
-            sisa_tagihan = total_kewajiban - billing.paid_amount
+            sisa_tagihan = max(
+                total_kewajiban - billing.paid_amount,
+                0
+            )
 
             if amount > sisa_tagihan:
                 raise HTTPException(
                     status_code=400,
-                    detail="Jumlah pembayaran melebihi sisa tagihan"
+                    detail=(
+                        f"Pembayaran melebihi sisa tagihan "
+                        f"Rp{sisa_tagihan:,}"
+                    )
                 )
 
             payment = Payment(
@@ -79,6 +88,7 @@ class PaymentService:
 
             db.add(payment)
             billing.paid_amount += amount
+            db.flush()
 
             if billing.paid_amount >= total_kewajiban:
                 billing.status = "paid"
@@ -98,17 +108,21 @@ class PaymentService:
                 amount
             )
 
+            sisa_setelah_bayar = max(
+                total_kewajiban - billing.paid_amount,
+                0
+            )
+
             return {
                 "pesan": "Pembayaran berhasil dicatat",
+                "message": "Pembayaran berhasil dicatat",
                 "payment_id": payment.id,
                 "nim": billing.nim,
                 "jumlah_bayar": payment.amount,
+                "jumlah_pembayaran": payment.amount,
                 "total_dibayar": billing.paid_amount,
-                "sisa_tagihan": (
-                    billing.total_amount
-                    + billing.fine_amount
-                    - billing.paid_amount
-                ),
+                "total_terbayar": billing.paid_amount,
+                "sisa_tagihan": sisa_setelah_bayar,
                 "status_tagihan": billing.status
             }
 
@@ -120,9 +134,30 @@ class PaymentService:
             db.rollback()
             raise HTTPException(
                 status_code=400,
-                detail="ID transaksi sudah digunakan"
+                detail="ID transaksi sudah pernah digunakan"
             )
 
         except Exception:
             db.rollback()
             raise
+
+    @staticmethod
+    def get_payment_history(
+        db: Session,
+        billing_id: int
+    ):
+        billing = db.get(Billing, billing_id)
+
+        if not billing:
+            raise HTTPException(
+                status_code=404,
+                detail="Tagihan tidak ditemukan"
+            )
+
+        payments = db.scalars(
+            select(Payment)
+            .where(Payment.billing_id == billing_id)
+            .order_by(Payment.paid_at.desc())
+        ).all()
+
+        return payments

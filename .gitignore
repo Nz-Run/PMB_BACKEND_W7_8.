@@ -45,3 +45,14 @@ pmb_backup*
 /PMB_BACKEND/
 # Source code backups
 *_backup_*.py
+
+# Nested duplicate project
+/PMB_BACKEND_W9_10/
+
+# Temporary source backups
+/app/main_backup.py
+/app/main_before_transcript_fix.py
+/app/main_broken_imports_backup.py
+
+# Migration backup text
+/1c93a3ba6c6b_backup.txt
